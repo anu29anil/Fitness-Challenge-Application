@@ -35,19 +35,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def normalize_name(value: str) -> str:
-    """Return a case- and whitespace-insensitive name key."""
-    return " ".join(value.split()).casefold()
+def standardize_name(value: str) -> str:
+    """Store display names with collapsed whitespace and consistent casing."""
+    return " ".join(value.split()).title()
 
 
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        UniqueConstraint(
-            "normalized_first_name",
-            "normalized_last_name",
-            name="uq_users_normalized_full_name",
-        ),
+        UniqueConstraint("first_name", "last_name", name="uq_users_full_name"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -59,8 +55,6 @@ class User(Base):
     hashed_password = Column(String)
     first_name = Column(String)
     last_name = Column(String)
-    normalized_first_name = Column(String, nullable=False)
-    normalized_last_name = Column(String, nullable=False)
     # Roles are assigned by backend provisioning and never accepted from the
     # public registration payload.
     role = Column(String, nullable=False, default="client")
@@ -96,7 +90,7 @@ class Workout(Base):
 Base.metadata.create_all(bind=engine)
 
 # `create_all` does not alter existing SQLite tables. Migrate older local
-# databases to keep the same guarantees in the base users/workouts tables.
+# databases to a standardized-name users model.
 if DATABASE_URL.startswith("sqlite"):
     with engine.begin() as connection:
         user_columns = {
@@ -109,35 +103,9 @@ if DATABASE_URL.startswith("sqlite"):
             )
         if "user_id" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN user_id TEXT"))
-        if "normalized_first_name" not in user_columns:
-            connection.execute(text("ALTER TABLE users ADD COLUMN normalized_first_name TEXT"))
-        if "normalized_last_name" not in user_columns:
-            connection.execute(text("ALTER TABLE users ADD COLUMN normalized_last_name TEXT"))
         connection.execute(text(
             "UPDATE users SET user_id = printf('USR%03d', id) "
             "WHERE user_id IS NULL OR trim(user_id) = ''"
-        ))
-        connection.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_user_id ON users(user_id)"
-        ))
-        users_to_normalize = connection.execute(text(
-            "SELECT id, first_name, last_name FROM users"
-        )).mappings()
-        for user in users_to_normalize:
-            connection.execute(
-                text(
-                    "UPDATE users SET normalized_first_name = :first_name, "
-                    "normalized_last_name = :last_name WHERE id = :id"
-                ),
-                {
-                    "id": user["id"],
-                    "first_name": normalize_name(user["first_name"] or ""),
-                    "last_name": normalize_name(user["last_name"] or ""),
-                },
-            )
-        connection.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_normalized_full_name "
-            "ON users(normalized_first_name, normalized_last_name)"
         ))
         # Migrate an account created by the earlier local prototype. The old
         # field is deliberately not consulted for any future authorization.
@@ -145,6 +113,43 @@ if DATABASE_URL.startswith("sqlite"):
             connection.execute(
                 text("UPDATE users SET role = 'admin' WHERE is_admin = 1")
             )
+        # Rebuild legacy users tables so normalized helper columns disappear.
+        # Names are standardized before inserting into the direct unique pair.
+        if "normalized_first_name" in user_columns or "normalized_last_name" in user_columns:
+            legacy_users = connection.execute(text(
+                "SELECT id, user_id, username, email, hashed_password, first_name, "
+                "last_name, role, created_at FROM users"
+            )).mappings().all()
+            connection.execute(text(
+                "CREATE TABLE users_rebuilt ("
+                "id INTEGER NOT NULL PRIMARY KEY, user_id VARCHAR NOT NULL UNIQUE, "
+                "username VARCHAR UNIQUE, email VARCHAR UNIQUE, hashed_password VARCHAR, "
+                "first_name VARCHAR, last_name VARCHAR, role VARCHAR NOT NULL DEFAULT 'client', "
+                "created_at DATETIME, CONSTRAINT uq_users_full_name UNIQUE (first_name, last_name)"
+                ")"
+            ))
+            for user in legacy_users:
+                connection.execute(
+                    text(
+                        "INSERT INTO users_rebuilt "
+                        "(id, user_id, username, email, hashed_password, first_name, last_name, role, created_at) "
+                        "VALUES (:id, :user_id, :username, :email, :hashed_password, "
+                        ":first_name, :last_name, :role, :created_at)"
+                    ),
+                    {
+                        **user,
+                        "first_name": standardize_name(user["first_name"] or ""),
+                        "last_name": standardize_name(user["last_name"] or ""),
+                    },
+                )
+            connection.execute(text("DROP TABLE users"))
+            connection.execute(text("ALTER TABLE users_rebuilt RENAME TO users"))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_user_id ON users(user_id)"
+        ))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_full_name ON users(first_name, last_name)"
+        ))
         workout_columns = {
             column[1]
             for column in connection.exec_driver_sql("PRAGMA table_info(workouts)")
@@ -210,10 +215,8 @@ def provision_initial_admin() -> None:
             user_id=f"PENDING-{uuid4().hex}",
             username=INITIAL_ADMIN_USERNAME,
             email=INITIAL_ADMIN_EMAIL,
-            first_name=INITIAL_ADMIN_FIRST_NAME,
-            last_name=INITIAL_ADMIN_LAST_NAME,
-            normalized_first_name=normalize_name(INITIAL_ADMIN_FIRST_NAME),
-            normalized_last_name=normalize_name(INITIAL_ADMIN_LAST_NAME),
+            first_name=standardize_name(INITIAL_ADMIN_FIRST_NAME),
+            last_name=standardize_name(INITIAL_ADMIN_LAST_NAME),
             hashed_password=get_password_hash(INITIAL_ADMIN_PASSWORD),
             role="admin",
         )

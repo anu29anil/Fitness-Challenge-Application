@@ -83,7 +83,7 @@ uniqueness guarantee.
 
 | Table | Fields and types | Keys and purpose |
 | --- | --- | --- |
-| `users` | `id INTEGER`, `user_id TEXT`, `username TEXT`, `email TEXT`, `hashed_password TEXT`, `first_name TEXT`, `last_name TEXT`, `normalized_first_name TEXT`, `normalized_last_name TEXT`, `role TEXT`, `created_at DATETIME` | `id` is PK. `user_id` is UQ and is the external ID (`USR001`). `username` and `email` are UQ. The normalized-name pair is UQ. `role` is `client` or `admin`. Passwords are bcrypt hashes only. |
+| `users` | `id INTEGER`, `user_id TEXT`, `username TEXT`, `email TEXT`, `hashed_password TEXT`, `first_name TEXT`, `last_name TEXT`, `role TEXT`, `created_at DATETIME` | `id` is PK. `user_id` is UQ and is the external ID (`USR001`). `username`, `email`, and the standardized (`first_name`, `last_name`) pair are UQ. `role` is `client` or `admin`. Passwords are bcrypt hashes only. |
 | `workouts` | `id INTEGER`, `user_id INTEGER`, `activity_type TEXT`, `distance FLOAT`, `duration FLOAT`, `steps INTEGER`, `recorded_at DATETIME`, `created_at DATETIME` | `id` is PK; `user_id` is FK to `users.id`. Only the metric applicable to an activity is populated. The tuple (`user_id`, `activity_type`, `recorded_at`) is UQ. |
 
 There is no persisted leaderboard table. The leaderboard is a derived read
@@ -97,16 +97,15 @@ uses only `role`.
 
 ### Duplicate-user enforcement
 
-1. The API first checks `username`, `email`, and the normalized first-name and
+1. The API first checks `username`, `email`, and the standardized first-name and
    last-name pair so it can return a clear validation error.
 2. The `users` table independently enforces uniqueness for `username`, `email`,
-   public `user_id`, and the pair (`normalized_first_name`,
-   `normalized_last_name`).
-3. During registration, the backend collapses extra whitespace and case-folds
-   the supplied names before storing them in `normalized_first_name` and
-   `normalized_last_name`. If simultaneous duplicate registrations pass the
-   initial checks, the database unique constraint rejects one transaction; the
-   backend rolls it back and returns `409 Conflict`.
+   public `user_id`, and the pair (`first_name`, `last_name`).
+3. During registration, the backend trims extra whitespace and applies a
+   consistent title case before storing `first_name` and `last_name`. If
+   simultaneous duplicate registrations pass the initial checks, the database
+   unique constraint rejects one transaction; the backend rolls it back and
+   returns `409 Conflict`.
 4. The public identifier is temporarily assigned a unique pending value while
    SQLite allocates `users.id`, then changed to `USR` plus the padded numeric ID
    before the transaction commits. A unique index enforces the final value.
@@ -212,7 +211,7 @@ ranking trend use SVG-based visualizations and API-derived ranked totals.
 | Decision / edge case | Handling and rationale |
 | --- | --- |
 | SQLite instead of a server database | Simple persistent local deployment. SQLAlchemy isolates the persistence code, allowing a later move to PostgreSQL if multi-process production scale is required. |
-| Duplicate registration requests | Application checks give user-friendly messages; the unique normalized-name pair on `users` protects concurrent requests. |
+| Duplicate registration requests | Application checks give user-friendly messages; the unique standardized-name pair on `users` protects concurrent requests. |
 | Duplicate activity requests | Application pre-check catches ordinary repeats; the unique workout tuple protects simultaneous identical requests. |
 | Invalid or missing metric | Frontend shows required/format errors; FastAPI validates type, positivity, whole-number-only metrics, and maxima. |
 | Zero or negative metric | A clear validation dialog is shown in the form and API rejects the request. |

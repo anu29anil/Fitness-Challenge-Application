@@ -1,6 +1,5 @@
-from sqlalchemy import func
 from sqlalchemy.orm import Session
-from database import User, Workout, normalize_name
+from database import User, Workout, standardize_name
 from schemas import UserCreate
 from auth import get_password_hash
 from datetime import datetime
@@ -13,8 +12,8 @@ from typing import Optional, List
 def create_user(db: Session, user: UserCreate) -> User:
     """Create a new user."""
     hashed_password = get_password_hash(user.password)
-    first_name = " ".join(user.first_name.split())
-    last_name = " ".join(user.last_name.split())
+    first_name = standardize_name(user.first_name)
+    last_name = standardize_name(user.last_name)
     db_user = User(
         # The temporary value satisfies the non-null unique column while the
         # database allocates the numeric key used to derive USR###.
@@ -24,8 +23,6 @@ def create_user(db: Session, user: UserCreate) -> User:
         hashed_password=hashed_password,
         first_name=first_name,
         last_name=last_name,
-        normalized_first_name=normalize_name(first_name),
-        normalized_last_name=normalize_name(last_name),
         role="client",
     )
     db.add(db_user)
@@ -48,14 +45,14 @@ def get_user_by_email(db: Session, email: str) -> Optional[User]:
 
 
 def get_user_by_full_name(db: Session, first_name: str, last_name: str) -> Optional[User]:
-    """Find a user by a normalized, case-insensitive full name."""
-    normalized_first_name = normalize_name(first_name)
-    normalized_last_name = normalize_name(last_name)
+    """Find a user by the standardized first-name and last-name pair."""
+    standard_first_name = standardize_name(first_name)
+    standard_last_name = standardize_name(last_name)
     return (
         db.query(User)
         .filter(
-            User.normalized_first_name == normalized_first_name,
-            User.normalized_last_name == normalized_last_name,
+            User.first_name == standard_first_name,
+            User.last_name == standard_last_name,
         )
         .first()
     )
