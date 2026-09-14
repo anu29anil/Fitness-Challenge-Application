@@ -1,6 +1,6 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from database import User, Workout, RegisteredName, ActivitySubmission
+from database import User, Workout, normalize_name
 from schemas import UserCreate
 from auth import get_password_hash
 from datetime import datetime
@@ -15,11 +15,6 @@ def create_user(db: Session, user: UserCreate) -> User:
     hashed_password = get_password_hash(user.password)
     first_name = " ".join(user.first_name.split())
     last_name = " ".join(user.last_name.split())
-    name_key = f"{first_name.lower()}|{last_name.lower()}"
-    # The unique primary key is the database-level concurrency guard.
-    reservation = RegisteredName(name_key=name_key)
-    db.add(reservation)
-    db.flush()
     db_user = User(
         # The temporary value satisfies the non-null unique column while the
         # database allocates the numeric key used to derive USR###.
@@ -29,13 +24,14 @@ def create_user(db: Session, user: UserCreate) -> User:
         hashed_password=hashed_password,
         first_name=first_name,
         last_name=last_name,
+        normalized_first_name=normalize_name(first_name),
+        normalized_last_name=normalize_name(last_name),
         role="client",
     )
     db.add(db_user)
     db.flush()
     db_user.user_id = f"USR{db_user.id:03d}"
     db.flush()
-    reservation.user_id = db_user.id
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -53,13 +49,13 @@ def get_user_by_email(db: Session, email: str) -> Optional[User]:
 
 def get_user_by_full_name(db: Session, first_name: str, last_name: str) -> Optional[User]:
     """Find a user by a normalized, case-insensitive full name."""
-    normalized_first_name = " ".join(first_name.split()).lower()
-    normalized_last_name = " ".join(last_name.split()).lower()
+    normalized_first_name = normalize_name(first_name)
+    normalized_last_name = normalize_name(last_name)
     return (
         db.query(User)
         .filter(
-            func.lower(User.first_name) == normalized_first_name,
-            func.lower(User.last_name) == normalized_last_name,
+            User.normalized_first_name == normalized_first_name,
+            User.normalized_last_name == normalized_last_name,
         )
         .first()
     )
@@ -93,15 +89,12 @@ def create_activity(db: Session, user_id: int, activity_type: str, value: float,
     fields = {"distance": None, "duration": None, "steps": None}
     metric = ACTIVITY_POINTS[activity_type][0]
     fields[metric] = int(value) if metric == "steps" else value
-    # A unique activity-submission row is inserted in the same transaction as
-    # the workout. It is the database guard when two requests arrive together.
-    db.add(ActivitySubmission(user_id=user_id, activity_type=activity_type, recorded_at=recorded_at))
     item = Workout(user_id=user_id, activity_type=activity_type, recorded_at=recorded_at, **fields)
     db.add(item); db.commit(); db.refresh(item)
     return item
 
 def get_duplicate_activity(db: Session, user_id: int, activity_type: str, recorded_at: datetime) -> Optional[Workout]:
-    """Find an existing matching activity before insert; the DB constraint covers races."""
+    """Find a matching activity before insert; the workout constraint covers races."""
     return (
         db.query(Workout)
         .filter(

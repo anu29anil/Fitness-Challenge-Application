@@ -35,10 +35,19 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def normalize_name(value: str) -> str:
+    """Return a case- and whitespace-insensitive name key."""
+    return " ".join(value.split()).casefold()
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        UniqueConstraint("first_name", "last_name", name="uq_users_full_name"),
+        UniqueConstraint(
+            "normalized_first_name",
+            "normalized_last_name",
+            name="uq_users_normalized_full_name",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -50,6 +59,8 @@ class User(Base):
     hashed_password = Column(String)
     first_name = Column(String)
     last_name = Column(String)
+    normalized_first_name = Column(String, nullable=False)
+    normalized_last_name = Column(String, nullable=False)
     # Roles are assigned by backend provisioning and never accepted from the
     # public registration payload.
     role = Column(String, nullable=False, default="client")
@@ -63,14 +74,6 @@ class User(Base):
         return self.user_id
 
 
-class RegisteredName(Base):
-    """Normalized names claimed by registrations; unique even on legacy databases."""
-    __tablename__ = "registered_names"
-
-    name_key = Column(String, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True)
-
-
 class Workout(Base):
     __tablename__ = "workouts"
     __table_args__ = (
@@ -82,7 +85,6 @@ class Workout(Base):
     activity_type = Column(String)  # e.g., "running", "cycling", "walking"
     distance = Column(Float)  # in km
     duration = Column(Float)  # in minutes
-    calories_burned = Column(Float)
     steps = Column(Integer)
     recorded_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -90,26 +92,11 @@ class Workout(Base):
     user = relationship("User", back_populates="workouts")
 
 
-class ActivitySubmission(Base):
-    """Unique activity keys used to reject concurrent duplicate submissions."""
-    __tablename__ = "activity_submissions"
-    __table_args__ = (
-        UniqueConstraint("user_id", "activity_type", "recorded_at", name="uq_activity_submission"),
-    )
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    activity_type = Column(String, nullable=False)
-    recorded_at = Column(DateTime, nullable=False)
-
-
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-# `create_all` does not add constraints to databases created by older versions.
-# The activity index makes the race-sensitive rule effective for that database.
-# Normalized registration names live in `registered_names`, which avoids deleting
-# legacy duplicate accounts while enforcing uniqueness for every new request.
+# `create_all` does not alter existing SQLite tables. Migrate older local
+# databases to keep the same guarantees in the base users/workouts tables.
 if DATABASE_URL.startswith("sqlite"):
     with engine.begin() as connection:
         user_columns = {
@@ -122,6 +109,10 @@ if DATABASE_URL.startswith("sqlite"):
             )
         if "user_id" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN user_id TEXT"))
+        if "normalized_first_name" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN normalized_first_name TEXT"))
+        if "normalized_last_name" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN normalized_last_name TEXT"))
         connection.execute(text(
             "UPDATE users SET user_id = printf('USR%03d', id) "
             "WHERE user_id IS NULL OR trim(user_id) = ''"
@@ -129,22 +120,64 @@ if DATABASE_URL.startswith("sqlite"):
         connection.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_user_id ON users(user_id)"
         ))
+        users_to_normalize = connection.execute(text(
+            "SELECT id, first_name, last_name FROM users"
+        )).mappings()
+        for user in users_to_normalize:
+            connection.execute(
+                text(
+                    "UPDATE users SET normalized_first_name = :first_name, "
+                    "normalized_last_name = :last_name WHERE id = :id"
+                ),
+                {
+                    "id": user["id"],
+                    "first_name": normalize_name(user["first_name"] or ""),
+                    "last_name": normalize_name(user["last_name"] or ""),
+                },
+            )
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_normalized_full_name "
+            "ON users(normalized_first_name, normalized_last_name)"
+        ))
         # Migrate an account created by the earlier local prototype. The old
         # field is deliberately not consulted for any future authorization.
         if "is_admin" in user_columns:
             connection.execute(
                 text("UPDATE users SET role = 'admin' WHERE is_admin = 1")
             )
+        workout_columns = {
+            column[1]
+            for column in connection.exec_driver_sql("PRAGMA table_info(workouts)")
+        }
+        if "calories_burned" in workout_columns:
+            connection.execute(text(
+                "CREATE TABLE workouts_rebuilt ("
+                "id INTEGER NOT NULL PRIMARY KEY, "
+                "user_id INTEGER, activity_type VARCHAR, distance FLOAT, "
+                "duration FLOAT, steps INTEGER, recorded_at DATETIME, "
+                "created_at DATETIME, "
+                "CONSTRAINT uq_workouts_user_activity_timestamp "
+                "UNIQUE (user_id, activity_type, recorded_at), "
+                "FOREIGN KEY(user_id) REFERENCES users (id)"
+                ")"
+            ))
+            connection.execute(text(
+                "INSERT INTO workouts_rebuilt "
+                "(id, user_id, activity_type, distance, duration, steps, recorded_at, created_at) "
+                "SELECT id, user_id, activity_type, distance, duration, steps, recorded_at, created_at "
+                "FROM workouts"
+            ))
+            connection.execute(text("DROP TABLE workouts"))
+            connection.execute(text("ALTER TABLE workouts_rebuilt RENAME TO workouts"))
         connection.execute(text(
-            "INSERT OR IGNORE INTO registered_names (name_key, user_id) "
-            "SELECT lower(trim(first_name)) || '|' || lower(trim(last_name)), min(id) "
-            "FROM users GROUP BY lower(trim(first_name)), lower(trim(last_name))"
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_workouts_user_activity_timestamp "
+            "ON workouts(user_id, activity_type, recorded_at)"
         ))
         connection.execute(text(
-            "INSERT OR IGNORE INTO activity_submissions (user_id, activity_type, recorded_at) "
-            "SELECT user_id, activity_type, recorded_at FROM workouts "
-            "WHERE activity_type IS NOT NULL GROUP BY user_id, activity_type, recorded_at"
+            "CREATE INDEX IF NOT EXISTS ix_workouts_user_id ON workouts(user_id)"
         ))
+        connection.execute(text("DROP TABLE IF EXISTS registered_names"))
+        connection.execute(text("DROP TABLE IF EXISTS activity_submissions"))
 
 
 def provision_initial_admin() -> None:
@@ -179,6 +212,8 @@ def provision_initial_admin() -> None:
             email=INITIAL_ADMIN_EMAIL,
             first_name=INITIAL_ADMIN_FIRST_NAME,
             last_name=INITIAL_ADMIN_LAST_NAME,
+            normalized_first_name=normalize_name(INITIAL_ADMIN_FIRST_NAME),
+            normalized_last_name=normalize_name(INITIAL_ADMIN_LAST_NAME),
             hashed_password=get_password_hash(INITIAL_ADMIN_PASSWORD),
             role="admin",
         )

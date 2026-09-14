@@ -70,4 +70,4 @@ Neogov Fitness Activity Tracker is a React + FastAPI web app for recording fitne
 - Administrator endpoints validate the database role on the API before returning aggregate user data and return `403 Forbidden` to clients.
 - The administrator dashboard's Recent activities **View All** link opens the complete all-client Activity History page.
 
-The active data model contains only users, workouts, registration-name reservations, and activity-submission reservations.
+The active data model contains only `users` and `workouts`. Database uniqueness constraints on normalized user names and workout identity protect against concurrent duplicates.
