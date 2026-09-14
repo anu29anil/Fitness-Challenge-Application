@@ -1,0 +1,12 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { apiClient } from "@/utils/apiClient";
+
+type AdminUser = { id: number; first_name: string; last_name: string; username: string; email: string; created_at: string; activity_count: number; points: number };
+
+export const AdminUsersPage: React.FC = () => {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [query, setQuery] = useState("");
+  useEffect(() => { apiClient.get<AdminUser[]>("/admin/users").then((response) => setUsers(response.data)).catch(() => {}); }, []);
+  const shownUsers = useMemo(() => users.filter((user) => `${user.first_name} ${user.last_name} ${user.username} ${user.email}`.toLowerCase().includes(query.toLowerCase())), [query, users]);
+  return <main className="min-h-screen bg-[#fffaf7] px-4 py-7 text-slate-900 sm:px-6 lg:px-8"><div className="mx-auto max-w-[1280px]"><header className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Users</h1><p className="mt-1 text-slate-500">View every registered client and their activity summary.</p></div><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users" className="rounded-lg border border-stone-200 bg-white px-4 py-2 text-sm outline-none focus:border-orange-500" /></header><section className="mt-6 overflow-hidden rounded-2xl border border-stone-100 bg-white shadow-sm"><div className="overflow-x-auto"><table className="min-w-full text-left"><thead className="border-b border-stone-100 bg-stone-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-6 py-4">User</th><th className="px-6 py-4">Email</th><th className="px-6 py-4">Joined</th><th className="px-6 py-4">Activities</th><th className="px-6 py-4 text-right">Points</th></tr></thead><tbody className="divide-y divide-stone-100">{shownUsers.map((user) => <tr key={user.id} className="text-sm"><td className="px-6 py-4"><b>{user.first_name} {user.last_name}</b><p className="mt-1 text-xs text-slate-500">@{user.username}</p></td><td className="px-6 py-4 text-slate-600">{user.email}</td><td className="px-6 py-4 text-slate-600">{new Date(user.created_at).toLocaleDateString()}</td><td className="px-6 py-4">{user.activity_count}</td><td className="px-6 py-4 text-right font-bold text-orange-600">{user.points.toLocaleString()}</td></tr>)}{!shownUsers.length && <tr><td colSpan={5} className="px-6 py-16 text-center text-slate-500">No users found.</td></tr>}</tbody></table></div></section></div></main>;
+};

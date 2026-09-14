@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Keep the dashboard summary values prominent without overpowering the cards. */
+.grid.sm\:grid-cols-3 > div > b {
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+
+.how-it-works-card {
+  min-height: 176px;
+  perspective: 1000px;
+}
+
+.how-it-works-card-inner {
+  position: relative;
+  width: 100%;
+  min-height: 176px;
+  transition: transform 0.6s;
+  transform-style: preserve-3d;
+}
+
+.how-it-works-card:hover .how-it-works-card-inner {
+  transform: rotateY(180deg);
+}
+
+.how-it-works-card-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+}
+
+.how-it-works-card-back {
+  transform: rotateY(180deg);
+}
+
+* {
+  @apply scroll-smooth;
+}
+
+body {
+  @apply bg-white text-gray-900;
+  font-family: 'Inter', sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  @apply font-display font-bold;
+}
+
+/* Gradient text utility */
+.gradient-text {
+  @apply bg-gradient-warm bg-clip-text text-transparent;
+}
+
+/* Smooth transitions */
+.transition-smooth {
+  @apply transition-all duration-300 ease-in-out;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  @apply w-2;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-primary-500 rounded-full hover:bg-primary-600;
+}

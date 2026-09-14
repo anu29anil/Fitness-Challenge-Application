@@ -1,0 +1,8 @@
+NEOGOV FITNESS ACTIVITY TRACKER
+
+Current product: activity logging, normalized points, personal dashboard, and global leaderboard.
+
+Start here: QUICK_START.md
+Features: README.md
+Testing: TESTING_GUIDE.md
+API: API_REFERENCE.md
